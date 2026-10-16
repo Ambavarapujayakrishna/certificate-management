@@ -14,6 +14,14 @@ const DN_SHORT_NAME_MAP = {
     L: 'localityName'
 };
 
+function parseRsaBits(algorithm) {
+    if (!algorithm) return 2048;
+    const clean = String(algorithm).replace(/\s+/g, '').toUpperCase();
+    if (clean.includes('4096')) return 4096;
+    if (clean.includes('3072')) return 3072;
+    return 2048;
+}
+
 function parseDnToAttributes(subjectDn) {
     return subjectDn
         .split(',')
@@ -74,7 +82,7 @@ function persistMockKeys(all) {
 const mockHsm = {
     async generateKeyPairCsr({ label, subjectDN, algorithm }) {
         console.warn(`[HSM:mock] Generating "${label}" in a local software store (NOT a real HSM, local testing only!)`);
-        const bits = algorithm === 'RSA4096' ? 4096 : 2048;
+        const bits = parseRsaBits(algorithm);
         const keypair = forge.pki.rsa.generateKeyPair({ bits, workers: 2 });
         const all = loadMockKeys();
 
@@ -138,6 +146,8 @@ function loadPkcs11() {
     try {
         const pkcs11js = require('pkcs11js');
         const pkcs11 = new pkcs11js.PKCS11();
+        // Copy all PKCS#11 constants (CKF_*, CKO_*, CKA_*, CKM_*, etc.) onto instance
+        Object.assign(pkcs11, pkcs11js);
         const lib = process.env.CLOUDHSM_PKCS11_LIB || '/opt/cloudhsm/lib/libcloudhsm_pkcs11.so';
         pkcs11.load(lib);
         pkcs11.C_Initialize();
@@ -151,7 +161,7 @@ function loadPkcs11() {
     }
 }
 
-function withSession(fn) {
+async function withSession(fn) {
     const pkcs11 = loadPkcs11();
     const pin = process.env.CLOUDHSM_PIN;
     if (!pin) throw new Error('CLOUDHSM_PIN env var is required (format: <CU_USERNAME>:<CU_PASSWORD>)');
@@ -163,13 +173,18 @@ function withSession(fn) {
             throw new Error('No CloudHSM slots found - check CloudHSM status and network connectivity from this EC2 instance');
         }
         const slot = slots[0];
-        session = pkcs11.C_OpenSession(slot, pkcs11.CKF_SERIAL_SESSION | pkcs11.CKF_RW_SESSION);
-        pkcs11.C_Login(session, pkcs11.CKU_USER, pin);
-        return fn(session, pkcs11);
+        // In PKCS#11, CKF_SERIAL_SESSION (0x4) is MANDATORY. Without it, CloudHSM returns CKR_SESSION_PARALLEL_NOT_SUPPORTED.
+        const CKF_SERIAL_SESSION = pkcs11.CKF_SERIAL_SESSION ?? 0x00000004;
+        const CKF_RW_SESSION = pkcs11.CKF_RW_SESSION ?? 0x00000002;
+        const CKU_USER = pkcs11.CKU_USER ?? 1;
+
+        session = pkcs11.C_OpenSession(slot, CKF_SERIAL_SESSION | CKF_RW_SESSION);
+        pkcs11.C_Login(session, CKU_USER, pin);
+        return await fn(session, pkcs11);
     } finally {
         if (session) {
             try { pkcs11.C_Logout(session); } catch (_) { } // catch if already logged out
-            pkcs11.C_CloseSession(session);
+            try { pkcs11.C_CloseSession(session); } catch (_) { }
         }
     }
 }
@@ -193,7 +208,7 @@ function findHsmKeyHandle(session, pkcs11, keyClass, label) {
 const cloudHsm = {
     async generateKeyPairCsr({ label, subjectDN, algorithm }) {
         return withSession(async (session, pkcs11) => {
-            const bits = algorithm === 'RSA4096' ? 4096 : 2048;
+            const bits = parseRsaBits(algorithm);
 
             const publicTemplate = [
                 { type: pkcs11.CKA_CLASS, value: pkcs11.CKO_PUBLIC_KEY },
