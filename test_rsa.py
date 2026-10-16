@@ -16,8 +16,9 @@ lib = pkcs11.lib(LIB_PATH)
 token = next(lib.get_tokens())
 print(f"Token: {token.label}")
 
-with token.open(user_pin=HSM_PIN) as session:
-    print("Session opened and logged in.")
+# rw=True is MANDATORY to open a Read-Write session!
+with token.open(user_pin=HSM_PIN, rw=True) as session:
+    print("Session opened (Read-Write) and logged in.")
     print("Generating RSA key pair (2048-bit)...")
 
     pub, priv = session.generate_keypair(
@@ -27,7 +28,7 @@ with token.open(user_pin=HSM_PIN) as session:
         store=True,
         capabilities=pkcs11.MechanismFlag.SIGN | pkcs11.MechanismFlag.VERIFY
     )
-    print("RSA Key pair generated!")
+    print("SUCCESS: RSA Key pair generated!")
     print(f"Public key handle: {pub}")
     print(f"Private key handle: {priv}")
 
