@@ -1,0 +1,153 @@
+:root {
+    color-scheme: light;
+    --border: #d0d7de;
+    --accent: #0969da;
+    --bg-soft: #f6f8fa;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    margin: 0;
+    color: #1f2328;
+    background: #fff;
+}
+
+header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1rem 1.5rem;
+    border-bottom: 1px solid var(--border);
+}
+
+header h1 {
+    font-size: 1.25rem;
+    margin: 0;
+}
+
+.badge {
+    font-size: 0.75rem;
+    padding: 0.25rem 0.6rem;
+    border-radius: 999px;
+    background: var(--bg-soft);
+    border: 1px solid var(--border);
+}
+
+.tabs {
+    display: flex;
+    gap: 0.25rem;
+    padding: 0.75rem 1.5rem 0;
+    border-bottom: 1px solid var(--border);
+}
+
+.tab-btn {
+    border: 1px solid var(--border);
+    border-bottom: none;
+    background: var(--bg-soft);
+    padding: 0.5rem 0.8rem;
+    border-radius: 6px 6px 0 0;
+    cursor: pointer;
+    font-size: 0.85rem;
+}
+
+.tab-btn.active {
+    background: #fff;
+    font-weight: 600;
+}
+
+main {
+    padding: 1.5rem;
+    max-width: 760px;
+    margin: 0 auto;
+}
+
+.tab-panel {
+    display: none;
+}
+
+.tab-panel.active {
+    display: block;
+}
+
+form {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    max-width: 480px;
+}
+
+label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    font-size: 0.85rem;
+    font-weight: 600;
+}
+
+input,
+select,
+textarea {
+    font: inherit;
+    padding: 0.45rem 0.6rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+}
+
+button {
+    align-self: flex-start;
+    padding: 0.5rem 1rem;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: 600;
+}
+
+.hint {
+    font-size: 0.8rem;
+    color: #57606a;
+    margin-top: -0.5rem;
+}
+
+.result {
+    margin-top: 1rem;
+    background: var(--bg-soft);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.75rem;
+    font-size: 0.85rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 240px;
+    overflow: auto;
+}
+
+#keys-table-wrap {
+    margin-top: 1.5rem;
+    border-top: 1px solid var(--border);
+    padding-top: 1.5rem;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 0.75rem;
+    font-size: 0.85rem;
+}
+
+th,
+td {
+    text-align: left;
+    padding: 0.4rem 0.6rem;
+    border-bottom: 1px solid var(--border);
+}
+
+td a {
+    margin-right: 0.5rem;
+    color: var(--accent);
+}

@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DocSigning</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <header>
+        <h1>DocSigning</h1>
+        <div class="header-badges">
+            <span class="badge" id="hsmBadge">HSM</span><span class="badge" id="ejbcaBadge">EJBCA</span>
+        </div>
+    </header>
+
+    <nav class="tabs">
+        <button class="tab-btn active" data-tab="keys">1. Generate Key &amp; CSR</button>
+        <button class="tab-btn" data-tab="enroll">2. Enroll with CA (EJBCA)</button>
+        <button class="tab-btn" data-tab="import">3. Import Certificate</button>
+        <button class="tab-btn" data-tab="sign">4. Sign Document</button>
+    </nav>
+
+    <main>
+        <!-- Tab 1: Generate Key & CSR -->
+        <section id="tab-keys" class="tab-panel active">
+            <h2>Generate key pair in HSM &amp; CSR</h2>
+            <form id="form-generate">
+                <label>Key label in HSM <input name="label" placeholder="signer-001" required></label>
+                <label>Subject DN in CSR <input name="subject" placeholder="CN=Signer-001,O=Acme,C=US" required></label>
+                <label>Algorithm
+                    <select name="algorithm">
+                        <option value="RSA 2048">RSA 2048</option>
+                        <option value="RSA 3072">RSA 3072</option>
+                        <option value="RSA 4096">RSA 4096</option>
+                    </select>
+                </label>
+                <button type="submit">Generate</button>
+            </form>
+            <pre id="generate-result" class="result"></pre>
+        </section>
+
+        <!-- Tab 2: Enroll with EJBCA CA -->
+        <section id="tab-enroll" class="tab-panel">
+            <h2>Enroll CSR to EJBCA CA</h2>
+            <p class="hint">The end entity (username/password) must already exist in EJBCA before enrolling.</p>
+            <form id="form-enroll">
+                <label>Key label in HSM <input name="label" placeholder="signer-001" required></label>
+                <label>EJBCA Username <input name="username" placeholder="signer-001" required></label>
+                <label>Enrollment Code / Password <input name="password" type="password" required></label>
+                <label>Certificate profile <input name="certificateProfileName" placeholder="DocSigningProfile"></label>
+                <label>End entity profile <input name="endEntityProfileName" placeholder="DocSigningProfile"></label>
+                <label>Certificate Authority Name <input name="certificateAuthorityName"
+                        placeholder="DocSigning Issuing CA"></label>
+                <button type="submit">Enroll</button>
+            </form>
+            <pre id="enroll-result" class="result"></pre>
+        </section>
+
+        <!-- Tab 3: Import Certificate -->
+        <section id="tab-import" class="tab-panel">
+            <h2>Import Certificate linked to HSM Key</h2>
+            <form id="form-import">
+                <label>Key label in HSM <input name="label" placeholder="signer-001" required></label>
+                <label>Certificate PEM
+                    <textarea name="certPem" rows="8" placeholder="-----BEGIN CERTIFICATE-----..."></textarea>
+                </label>
+                <label>... or pick a .crt / .pem file: <input type="file" id="certFile" accept=".pem,.crt,.cer"></label>
+                <button type="submit">Import</button>
+            </form>
+            <pre id="import-result" class="result"></pre>
+        </section>
+
+        <!-- Tab 4: Sign Document -->
+        <section id="tab-sign" class="tab-panel">
+            <h2>Sign a Document</h2>
+            <form id="form-sign">
+                <label>Key label in HSM <input name="label" placeholder="signer-001" required></label>
+                <label>Select PDF to sign: <input type="file" id="signDoc" name="file" accept=".pdf" required></label>
+                <button type="submit">Sign</button>
+            </form>
+            <pre id="sign-result" class="result"></pre>
+        </section>
+
+        <!-- Keys & Documents Table -->
+        <section id="keys-table-wrap">
+            <h2>Keys &amp; Documents</h2>
+            <button id="btn-keys-refresh">Refresh</button>
+            <table id="keys-table">
+                <thead>
+                    <tr>
+                        <th>Label</th>
+                        <th>Algorithm</th>
+                        <th>In HSM</th>
+                        <th>Has Cert</th>
+                        <th>Status</th>
+                        <th>Serial</th>
+                        <th>Valid After</th>
+                        <th>Valid Before</th>
+                        <th>Downloads</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </section>
+    </main>
+
+    <script src="app.js"></script>
+</body>
+
+</html>
