@@ -190,12 +190,23 @@ async function withSession(fn) {
 }
 
 function findHsmKeyHandle(session, pkcs11, keyClass, label) {
+    const labelBuf = Buffer.isBuffer(label) ? label : Buffer.from(label, 'utf8');
     pkcs11.C_FindObjectsInit(session, [
         { type: pkcs11.CKA_CLASS, value: keyClass },
-        { type: pkcs11.CKA_LABEL, value: label }
+        { type: pkcs11.CKA_LABEL, value: labelBuf }
     ]);
-    const handles = pkcs11.C_FindObjects(session, 1);
+    let handles = pkcs11.C_FindObjects(session, 1);
     pkcs11.C_FindObjectsFinal(session);
+
+    if (!handles || !handles.length) {
+        // Fallback: search with string label in case driver matched as string
+        pkcs11.C_FindObjectsInit(session, [
+            { type: pkcs11.CKA_CLASS, value: keyClass },
+            { type: pkcs11.CKA_LABEL, value: String(label) }
+        ]);
+        handles = pkcs11.C_FindObjects(session, 1);
+        pkcs11.C_FindObjectsFinal(session);
+    }
 
     if (!handles || !handles.length) {
         const err = new Error(`No HSM key found for label "${label}"`);
@@ -209,12 +220,16 @@ const cloudHsm = {
     async generateKeyPairCsr({ label, subjectDN, algorithm }) {
         return withSession(async (session, pkcs11) => {
             const bits = parseRsaBits(algorithm);
+            const labelBuf = Buffer.from(label, 'utf8');
 
+            console.log(`[CloudHSM] Generating RSA key pair: label="${label}", bits=${bits}`);
+
+            // In AWS CloudHSM C_GenerateKeyPair:
+            // 1. CKA_CLASS and CKA_KEY_TYPE are omitted (implicit in CKM_RSA_PKCS_KEY_PAIR_GEN).
+            // 2. If CKA_ENCRYPT is true on public key, CKA_DECRYPT MUST be true on private key.
             const publicTemplate = [
-                { type: pkcs11.CKA_CLASS, value: pkcs11.CKO_PUBLIC_KEY },
-                { type: pkcs11.CKA_KEY_TYPE, value: pkcs11.CKK_RSA },
                 { type: pkcs11.CKA_TOKEN, value: true },
-                { type: pkcs11.CKA_LABEL, value: label },
+                { type: pkcs11.CKA_LABEL, value: labelBuf },
                 { type: pkcs11.CKA_MODULUS_BITS, value: bits },
                 { type: pkcs11.CKA_PUBLIC_EXPONENT, value: Buffer.from([0x01, 0x00, 0x01]) },
                 { type: pkcs11.CKA_VERIFY, value: true },
@@ -222,43 +237,69 @@ const cloudHsm = {
             ];
 
             const privateTemplate = [
-                { type: pkcs11.CKA_CLASS, value: pkcs11.CKO_PRIVATE_KEY },
-                { type: pkcs11.CKA_KEY_TYPE, value: pkcs11.CKK_RSA },
                 { type: pkcs11.CKA_TOKEN, value: true },
-                { type: pkcs11.CKA_LABEL, value: label },
+                { type: pkcs11.CKA_LABEL, value: labelBuf },
                 { type: pkcs11.CKA_PRIVATE, value: true },
                 { type: pkcs11.CKA_SIGN, value: true },
-                { type: pkcs11.CKA_EXTRACTABLE, value: false } // the private key must never be able to leave the HSM
+                { type: pkcs11.CKA_DECRYPT, value: true },
+                { type: pkcs11.CKA_EXTRACTABLE, value: false }
             ];
 
-            const handles = pkcs11.C_GenerateKeyPair(
-                session,
-                { mechanism: pkcs11.CKM_RSA_PKCS_KEY_PAIR_GEN },
-                publicTemplate,
-                privateTemplate
-            );
+            let handles;
+            try {
+                handles = pkcs11.C_GenerateKeyPair(
+                    session,
+                    { mechanism: pkcs11.CKM_RSA_PKCS_KEY_PAIR_GEN },
+                    publicTemplate,
+                    privateTemplate
+                );
+            } catch (err) {
+                console.error('[CloudHSM] C_GenerateKeyPair failed:', err.message);
+                throw err;
+            }
 
-            const attrs = pkcs11.C_GetAttributeValue(session, handles.publicKey, [
-                { type: pkcs11.CKA_MODULUS },
-                { type: pkcs11.CKA_PUBLIC_EXPONENT }
-            ]);
+            console.log('[CloudHSM] Key pair generated. Reading public key modulus and exponent...');
 
-            const n = new forge.jsbn.BigInteger(attrs[0].value.toString('hex'), 16);
-            const e = new forge.jsbn.BigInteger(attrs[1].value.toString('hex'), 16);
+            let attrs;
+            try {
+                attrs = pkcs11.C_GetAttributeValue(session, handles.publicKey, [
+                    { type: pkcs11.CKA_MODULUS, value: Buffer.alloc(bits / 8) },
+                    { type: pkcs11.CKA_PUBLIC_EXPONENT, value: Buffer.alloc(8) }
+                ]);
+            } catch (_) {
+                attrs = pkcs11.C_GetAttributeValue(session, handles.publicKey, [
+                    { type: pkcs11.CKA_MODULUS },
+                    { type: pkcs11.CKA_PUBLIC_EXPONENT }
+                ]);
+            }
+
+            const modBuf = attrs[0].value;
+            const expBuf = attrs[1].value;
+            const n = new forge.jsbn.BigInteger(modBuf.toString('hex'), 16);
+            const e = new forge.jsbn.BigInteger(expBuf.toString('hex'), 16);
             const publicKey = forge.pki.setRsaPublicKey(n, e);
 
-            // Build CertificationRequestInfo (version, subject, subjectPKInfo, attributes) and sign it:
-            // DER encoding inside the HSM, then assemble the final PKCS#10 structure around that signature.
+            // Build CertificationRequestInfo and sign inside the HSM
             const cri = forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.SEQUENCE, true, [
-                forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.INTEGER, forge.util.hexToBytes('00')), // version 0
+                forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.INTEGER, forge.util.hexToBytes('00')),
                 forge.pki.distinguishedNameToAsn1(parseDnToAttributes(subjectDN)),
                 forge.pki.publicKeyToAsn1(publicKey),
-                forge.asn1.create(forge.asn1.Class.CONTEXT_SPECIFIC, 0, true, []) // attributes
+                forge.asn1.create(forge.asn1.Class.CONTEXT_SPECIFIC, 0, true, [])
             ]);
             const criBytes = Buffer.from(forge.asn1.toDer(cri).getBytes(), 'binary');
 
-            pkcs11.C_SignInit(session, { mechanism: pkcs11.CKM_SHA256_RSA_PKCS }, handles.privateKey);
-            const signature = pkcs11.C_Sign(session, criBytes, Buffer.alloc(bits / 8));
+            console.log('[CloudHSM] Signing CSR with private key...');
+            let signature;
+            try {
+                pkcs11.C_SignInit(session, { mechanism: pkcs11.CKM_SHA256_RSA_PKCS }, handles.privateKey);
+                // Pre-allocating exact signature buffer (bits / 8) ensures a single-pass hardware sign call
+                // without triggering CloudHSM multi-call hash finalization errors.
+                const sigBuf = Buffer.alloc(bits / 8);
+                signature = pkcs11.C_Sign(session, criBytes, sigBuf);
+            } catch (err) {
+                console.error('[CloudHSM] C_Sign failed:', err.message);
+                throw err;
+            }
 
             const signatureAlgorithm = forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.SEQUENCE, true, [
                 forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.OID, forge.asn1.oidToDer(forge.pki.oids.sha256WithRSAEncryption).getBytes()),
@@ -272,13 +313,14 @@ const cloudHsm = {
             ]);
 
             const csrPem = forge.pem.encode({ type: 'CERTIFICATE REQUEST', body: forge.asn1.toDer(csrAsn1).getBytes() });
+            console.log(`[CloudHSM] CSR successfully generated for label="${label}"`);
             return { csrPem, publicKeyPem: forge.pki.publicKeyToPem(publicKey) };
         });
     },
 
     async importCertificate({ label, certificatePem, expectedPublicKeyPem }) {
         return withSession(async (session, pkcs11) => {
-            findHsmKeyHandle(session, pkcs11, pkcs11.CKO_PRIVATE_KEY, label); // confirms the key still exists in the HSM
+            findHsmKeyHandle(session, pkcs11, pkcs11.CKO_PRIVATE_KEY, label);
             return assertCertMatchesPublicKey(certificatePem, expectedPublicKeyPem);
         });
     },
@@ -288,7 +330,8 @@ const cloudHsm = {
             const privateKeyHandle = findHsmKeyHandle(session, pkcs11, pkcs11.CKO_PRIVATE_KEY, label);
             const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data);
             pkcs11.C_SignInit(session, { mechanism: pkcs11.CKM_SHA256_RSA_PKCS }, privateKeyHandle);
-            const signature = pkcs11.C_Sign(session, buffer, Buffer.alloc(512)); // 512 bytes covers up to RSA-4096
+            const sigBuf = Buffer.alloc(512); // up to 4096-bit RSA
+            const signature = pkcs11.C_Sign(session, buffer, sigBuf);
             return { signature: signature.toString('base64'), algorithm: 'RSA-SHA256' };
         });
     }
