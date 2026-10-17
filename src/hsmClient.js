@@ -297,16 +297,16 @@ const cloudHsm = {
             const e = new forge.jsbn.BigInteger(exponent.toString('hex'), 16);
             const publicKey = forge.pki.setRsaPublicKey(n, e);
 
-            // Build CertificationRequestInfo and sign inside the HSM
-            const cri = forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.SEQUENCE, true, [
-                forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.INTEGER, forge.util.hexToBytes('00')),
-                forge.pki.distinguishedNameToAsn1(parseDnToAttributes(subjectDN)),
-                forge.pki.publicKeyToAsn1(publicKey),
-                forge.asn1.create(forge.asn1.Class.CONTEXT_SPECIFIC, 0, true, [])
-            ]);
-            const criBytes = Buffer.from(forge.asn1.toDer(cri).getBytes(), 'binary');
+            // Build standard PKCS#10 CertificationRequest structure using node-forge
+            const csr = forge.pki.createCertificationRequest();
+            csr.publicKey = publicKey;
+            csr.setSubject(parseDnToAttributes(subjectDN));
 
-            console.log('[CloudHSM] Signing CSR with private key...');
+            // Obtain standard CertificationRequestInfo bytes to sign in HSM
+            csr.certificationRequestInfo = forge.pki.getCertificationRequestInfo(csr);
+            const criBytes = Buffer.from(forge.asn1.toDer(csr.certificationRequestInfo).getBytes(), 'binary');
+
+            console.log('[CloudHSM] Signing CSR with private key in HSM...');
             let signature;
             try {
                 pkcs11.C_SignInit(session, { mechanism: pkcs11.CKM_SHA256_RSA_PKCS }, handles.privateKey);
@@ -319,18 +319,12 @@ const cloudHsm = {
                 throw err;
             }
 
-            const signatureAlgorithm = forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.SEQUENCE, true, [
-                forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.OID, forge.asn1.oidToDer(forge.pki.oids.sha256WithRSAEncryption).getBytes()),
-                forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.NULL, '')
-            ]);
+            // Attach HSM hardware signature and export to standard PEM
+            csr.md = forge.md.sha256.create();
+            csr.signatureOid = csr.siginfo.algorithmOid = forge.pki.oids.sha256WithRSAEncryption;
+            csr.signature = signature.toString('binary');
 
-            const csrAsn1 = forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.SEQUENCE, true, [
-                cri,
-                signatureAlgorithm,
-                forge.asn1.create(forge.asn1.Class.UNIVERSAL, forge.asn1.Type.BITSTRING, forge.util.hexToBytes('00' + signature.toString('hex')))
-            ]);
-
-            const csrPem = forge.pem.encode({ type: 'CERTIFICATE REQUEST', body: forge.asn1.toDer(csrAsn1).getBytes() });
+            const csrPem = forge.pki.certificationRequestToPem(csr);
             console.log(`[CloudHSM] CSR successfully generated for label="${label}"`);
             return { csrPem, publicKeyPem: forge.pki.publicKeyToPem(publicKey) };
         });
