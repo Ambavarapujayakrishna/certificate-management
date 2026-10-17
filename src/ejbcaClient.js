@@ -7,24 +7,36 @@ function readIfExists(p) {
 }
 
 function buildHttpsAgent() {
-    // When EJBCA server or client certificates use legacy or smaller key lengths (e.g. < 2048-bit),
-    // OpenSSL 3.0+ rejects the handshake with "ee key too small" (SECLEVEL=2 default).
-    // Setting EJBCA_TLS_ALLOW_WEAK_KEYS=true (or EJBCA_TLS_INSECURE=true) allows SECLEVEL=0 ciphers to bypass this.
-    const allowWeakKeys = process.env.EJBCA_TLS_ALLOW_WEAK_KEYS === 'true' ||
-        process.env.EJBCA_TLS_ALLOW_WEAK_KEYS === '1' ||
-        process.env.EJBCA_TLS_INSECURE === 'true';
-
+    // When EJBCA server or client certificates use legacy or smaller key lengths (e.g. 1024-bit RSA),
+    // OpenSSL 3.0+ (built into Node 18+) rejects the TLS handshake with:
+    //   "error:0A00018F:SSL routines::ee key too small" (due to default SECLEVEL=2).
+    // Using 'DEFAULT@SECLEVEL=0' explicitly lowers OpenSSL's security level to 0,
+    // permitting legacy/shorter EE key lengths and avoiding handshake aborts.
+    const crypto = require('crypto');
     const agentOptions = {
-        cert: readIfExists(process.env.EJBCA_CLIENT_CERT_PATH),
-        key: readIfExists(process.env.EJBCA_CLIENT_KEY_PATH),
         ca: readIfExists(process.env.EJBCA_CA_CERT_PATH),
-        // Only ever set EJBCA_TLS_INSECURE=true against a local trial server you fully control.
+        // Only set EJBCA_TLS_INSECURE=true for local/trial servers where self-signed TLS certs are used (like Postman SSL verification OFF).
         rejectUnauthorized: process.env.EJBCA_TLS_INSECURE !== 'true',
+        ciphers: process.env.EJBCA_CIPHERS || 'DEFAULT@SECLEVEL=0',
+        minVersion: 'TLSv1',
     };
 
-    if (allowWeakKeys) {
-        // DEFAULT@SECLEVEL=0 tells OpenSSL to accept legacy/shorter EE key lengths without throwing "ee key too small"
-        agentOptions.ciphers = 'DEFAULT@SECLEVEL=0';
+    if (process.env.EJBCA_CLIENT_PFX_PATH && fs.existsSync(process.env.EJBCA_CLIENT_PFX_PATH)) {
+        agentOptions.pfx = fs.readFileSync(process.env.EJBCA_CLIENT_PFX_PATH);
+        if (process.env.EJBCA_CLIENT_PFX_PASSWORD) {
+            agentOptions.passphrase = process.env.EJBCA_CLIENT_PFX_PASSWORD;
+        }
+    } else {
+        agentOptions.cert = readIfExists(process.env.EJBCA_CLIENT_CERT_PATH);
+        agentOptions.key = readIfExists(process.env.EJBCA_CLIENT_KEY_PATH);
+        if (process.env.EJBCA_CLIENT_KEY_PASSWORD) {
+            agentOptions.passphrase = process.env.EJBCA_CLIENT_KEY_PASSWORD;
+        }
+    }
+
+    if (crypto.constants?.SSL_OP_LEGACY_SERVER_CONNECT) {
+        agentOptions.secureOptions = (crypto.constants.SSL_OP_LEGACY_SERVER_CONNECT || 0x4) |
+            (crypto.constants.SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION || 0x00040000);
     }
 
     return new https.Agent(agentOptions);
