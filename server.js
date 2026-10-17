@@ -63,6 +63,7 @@ app.post('/api/keys/generate-csr', async (req, res) => {
 
         res.json({ label, csrPem });
     } catch (err) {
+        console.error('[generate-csr] failed:', err.stack || err);
         res.status(err.status || 500).json({ error: err.message });
     }
 });
@@ -122,7 +123,8 @@ app.post('/api/keys/enroll', async (req, res) => {
         certStore.update(label, { certificatePem, chainPem, status: 'ENROLLED' });
         res.json({ label, certificatePem, chainPem });
     } catch (err) {
-        res.status(err.status || 500).json({ error: err.message });
+        console.error('[enroll] failed:', err.stack || err);
+        res.status(err.status || 502).json({ error: err.message });
     }
 });
 
@@ -154,7 +156,8 @@ app.post('/api/certificates/import', async (req, res) => {
 
         res.json({ label, bound });
     } catch (err) {
-        res.status(err.status || 500).json({ error: err.message });
+        console.error('[certificates/import] failed:', err.stack || err);
+        res.status(err.status || 400).json({ error: err.message });
     }
 });
 
@@ -217,6 +220,7 @@ app.post('/api/sign', upload.single('file'), async (req, res) => {
         });
     } catch (err) {
         cleanup();
+        console.error('[sign] failed:', err.stack || err);
         res.status(err.status || 500).json({ error: err.message });
     }
 });
