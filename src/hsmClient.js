@@ -216,9 +216,21 @@ function findHsmKeyHandle(session, pkcs11, keyClass, label) {
     return handles[0];
 }
 
+// CloudHSM can answer CKR_FUNCTION_FAILED to the NULL-buffer length query pkcs11js sends by default,
+// so supply a preallocated buffer and trim to the returned length.
+function readAttribute(pkcs11, session, handle, type, maxBytes) {
+    const [attr] = pkcs11.C_GetAttributeValue(session, handle, [{ type, value: Buffer.alloc(maxBytes) }]);
+    return attr.value;
+}
+
+function findKeyHandle(pkcs11, session, p11, label, keyClass) {
+    return findHsmKeyHandle(session, pkcs11, keyClass, label);
+}
+
 const cloudHsm = {
     async generateKeyPairCsr({ label, subjectDN, algorithm }) {
         return withSession(async (session, pkcs11) => {
+            const p11 = pkcs11;
             const bits = parseRsaBits(algorithm);
             const labelBuf = Buffer.from(label, 'utf8');
 
@@ -260,23 +272,22 @@ const cloudHsm = {
 
             console.log('[CloudHSM] Key pair generated. Reading public key modulus and exponent...');
 
-            let attrs;
+            let modulus;
+            let exponent;
             try {
-                attrs = pkcs11.C_GetAttributeValue(session, handles.publicKey, [
-                    { type: pkcs11.CKA_MODULUS, value: Buffer.alloc(bits / 8) },
-                    { type: pkcs11.CKA_PUBLIC_EXPONENT, value: Buffer.alloc(8) }
-                ]);
-            } catch (_) {
-                attrs = pkcs11.C_GetAttributeValue(session, handles.publicKey, [
-                    { type: pkcs11.CKA_MODULUS },
-                    { type: pkcs11.CKA_PUBLIC_EXPONENT }
-                ]);
+                // Public key handle is re-resolved by label in case the handle returned by keygen is not readable.
+                const pubHandle = findKeyHandle(pkcs11, session, p11, label, p11.CKO_PUBLIC_KEY);
+                modulus = readAttribute(pkcs11, session, pubHandle, p11.CKA_MODULUS, bits / 8);
+                exponent = readAttribute(pkcs11, session, pubHandle, p11.CKA_PUBLIC_EXPONENT, 8);
+            } catch (readErr) {
+                // Avoid leaving an orphan key pair under this label, which would block a retry.
+                try { pkcs11.C_DestroyObject(session, handles.privateKey); } catch (e) { /* best effort */ }
+                try { pkcs11.C_DestroyObject(session, handles.publicKey); } catch (e) { /* best effort */ }
+                throw new Error(`Key pair was generated but reading the public key failed (${readErr.message}); key pair was removed from HSM`);
             }
 
-            const modBuf = attrs[0].value;
-            const expBuf = attrs[1].value;
-            const n = new forge.jsbn.BigInteger(modBuf.toString('hex'), 16);
-            const e = new forge.jsbn.BigInteger(expBuf.toString('hex'), 16);
+            const n = new forge.jsbn.BigInteger(modulus.toString('hex'), 16);
+            const e = new forge.jsbn.BigInteger(exponent.toString('hex'), 16);
             const publicKey = forge.pki.setRsaPublicKey(n, e);
 
             // Build CertificationRequestInfo and sign inside the HSM
@@ -341,6 +352,7 @@ const client = HSM_MODE === 'cloudhsm' ? cloudHsm : mockHsm;
 
 module.exports = {
     generateKeyPairCsr: client.generateKeyPairCsr,
+    generateKeyAndCsr: client.generateKeyPairCsr,
     importCertificate: client.importCertificate,
     sign: client.sign
 };

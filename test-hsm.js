@@ -1,15 +1,47 @@
 /**
- * Diagnostic test to inspect key handles and test C_GetAttributeValue with exact PKCS#11 attributes
+ * Standalone test script for AWS CloudHSM using the updated reference logic
  */
 require('dotenv').config();
 const pkcs11js = require('pkcs11js');
+const forge = require('node-forge');
 
 const LIB_PATH = process.env.CLOUDHSM_PKCS11_LIB || '/opt/cloudhsm/lib/libcloudhsm_pkcs11.so';
 const PIN = process.env.CLOUDHSM_PIN;
 
+function readAttribute(pkcs11, session, handle, type, maxBytes) {
+    const [attr] = pkcs11.C_GetAttributeValue(session, handle, [{ type, value: Buffer.alloc(maxBytes) }]);
+    return attr.value;
+}
+
+function findKeyHandle(pkcs11, session, p11, label, keyClass) {
+    const labelBuf = Buffer.isBuffer(label) ? label : Buffer.from(label, 'utf8');
+    pkcs11.C_FindObjectsInit(session, [
+        { type: pkcs11.CKA_CLASS, value: keyClass },
+        { type: pkcs11.CKA_LABEL, value: labelBuf }
+    ]);
+    let handles = pkcs11.C_FindObjects(session, 1);
+    pkcs11.C_FindObjectsFinal(session);
+
+    if (!handles || !handles.length) {
+        pkcs11.C_FindObjectsInit(session, [
+            { type: pkcs11.CKA_CLASS, value: keyClass },
+            { type: pkcs11.CKA_LABEL, value: String(label) }
+        ]);
+        handles = pkcs11.C_FindObjects(session, 1);
+        pkcs11.C_FindObjectsFinal(session);
+    }
+
+    if (!handles || !handles.length) {
+        throw new Error(`No HSM key found for label "${label}"`);
+    }
+    return handles[0];
+}
+
 async function test() {
+    console.log('1. Loading PKCS#11 library from:', LIB_PATH);
     const pkcs11 = new pkcs11js.PKCS11();
     Object.assign(pkcs11, pkcs11js);
+    const p11 = pkcs11;
 
     pkcs11.load(LIB_PATH);
     pkcs11.C_Initialize();
@@ -17,85 +49,66 @@ async function test() {
     const slots = pkcs11.C_GetSlotList(true);
     const session = pkcs11.C_OpenSession(slots[0], 0x00000004 | 0x00000002);
     pkcs11.C_Login(session, 1, PIN);
+    console.log('Session established and logged in.');
 
-    console.log('Logged in.');
-    const label = Buffer.from('test_diag_key', 'utf8');
+    const label = 'test_ref_key';
+    const labelBuf = Buffer.from(label, 'utf8');
+    const bits = 2048;
 
-    // The working template from the previous run:
     const publicTemplate = [
         { type: pkcs11.CKA_TOKEN, value: true },
-        { type: pkcs11.CKA_LABEL, value: label },
-        { type: pkcs11.CKA_MODULUS_BITS, value: 2048 },
-        { type: pkcs11.CKA_PUBLIC_EXPONENT, value: Buffer.from([1, 0, 1]) },
+        { type: pkcs11.CKA_LABEL, value: labelBuf },
+        { type: pkcs11.CKA_MODULUS_BITS, value: bits },
+        { type: pkcs11.CKA_PUBLIC_EXPONENT, value: Buffer.from([0x01, 0x00, 0x01]) },
         { type: pkcs11.CKA_VERIFY, value: true },
         { type: pkcs11.CKA_ENCRYPT, value: true }
     ];
 
     const privateTemplate = [
         { type: pkcs11.CKA_TOKEN, value: true },
-        { type: pkcs11.CKA_LABEL, value: label },
+        { type: pkcs11.CKA_LABEL, value: labelBuf },
         { type: pkcs11.CKA_PRIVATE, value: true },
         { type: pkcs11.CKA_SIGN, value: true },
         { type: pkcs11.CKA_DECRYPT, value: true },
         { type: pkcs11.CKA_EXTRACTABLE, value: false }
     ];
 
-    const keys = pkcs11.C_GenerateKeyPair(
+    console.log('Generating RSA key pair...');
+    const handles = pkcs11.C_GenerateKeyPair(
         session,
         { mechanism: pkcs11.CKM_RSA_PKCS_KEY_PAIR_GEN },
         publicTemplate,
         privateTemplate
     );
+    console.log('Key pair generated successfully!');
 
-    console.log('Keys object keys:', Object.keys(keys));
-    console.log('Public handle:', keys.publicKey);
-    console.log('Private handle:', keys.privateKey);
-
-    // Test C_GetAttributeValue for basic attributes first
-    console.log('Reading CKA_LABEL and CKA_CLASS...');
+    let modulus;
+    let exponent;
     try {
-        const basic = pkcs11.C_GetAttributeValue(session, keys.publicKey, [
-            { type: pkcs11.CKA_CLASS },
-            { type: pkcs11.CKA_KEY_TYPE }
-        ]);
-        console.log('Class & KeyType:', basic);
-    } catch (e) {
-        console.error('Basic attr failed:', e.message);
+        console.log('Re-resolving public key handle and reading modulus/exponent via readAttribute...');
+        const pubHandle = findKeyHandle(pkcs11, session, p11, label, p11.CKO_PUBLIC_KEY);
+        modulus = readAttribute(pkcs11, session, pubHandle, p11.CKA_MODULUS, bits / 8);
+        exponent = readAttribute(pkcs11, session, pubHandle, p11.CKA_PUBLIC_EXPONENT, 8);
+        console.log('SUCCESS: Modulus read! Length:', modulus.length);
+        console.log('SUCCESS: Exponent read! Length:', exponent.length);
+    } catch (readErr) {
+        try { pkcs11.C_DestroyObject(session, handles.privateKey); } catch (e) { }
+        try { pkcs11.C_DestroyObject(session, handles.publicKey); } catch (e) { }
+        throw new Error(`Key pair was generated but reading the public key failed (${readErr.message}); key pair was removed from HSM`);
     }
 
-    // Now test CKA_MODULUS
-    console.log('Reading CKA_MODULUS...');
-    try {
-        const mod = pkcs11.C_GetAttributeValue(session, keys.publicKey, [
-            { type: pkcs11.CKA_MODULUS }
-        ]);
-        console.log('Modulus read SUCCESS! Value is Buffer?', Buffer.isBuffer(mod[0].value), 'Length:', mod[0].value ? mod[0].value.length : 0);
-    } catch (e) {
-        console.error('Modulus read failed:', e.message);
-    }
-
-    // Test C_Sign with CKM_RSA_PKCS (with SHA-256 pre-hashed DigestInfo)
-    console.log('Testing C_Sign with CKM_RSA_PKCS...');
-    try {
-        const crypto = require('crypto');
-        const hash = crypto.createHash('sha256').update('test').digest();
-        const prefix = Buffer.from('3031300d060960864801650304020105000420', 'hex');
-        const digestInfo = Buffer.concat([prefix, hash]);
-
-        pkcs11.C_SignInit(session, { mechanism: pkcs11.CKM_RSA_PKCS }, keys.privateKey);
-        const sig = pkcs11.C_Sign(session, digestInfo, Buffer.alloc(256));
-        console.log('C_Sign CKM_RSA_PKCS SUCCESS! Sig length:', sig.length);
-    } catch (e) {
-        console.error('C_Sign CKM_RSA_PKCS failed:', e.message);
-    }
+    const n = new forge.jsbn.BigInteger(modulus.toString('hex'), 16);
+    const e = new forge.jsbn.BigInteger(exponent.toString('hex'), 16);
+    const publicKey = forge.pki.setRsaPublicKey(n, e);
+    console.log('Public key successfully assembled into forge PKI format!');
 
     // Cleanup
-    pkcs11.C_DestroyObject(session, keys.publicKey);
-    pkcs11.C_DestroyObject(session, keys.privateKey);
+    try { pkcs11.C_DestroyObject(session, handles.privateKey); } catch (e) { }
+    try { pkcs11.C_DestroyObject(session, handles.publicKey); } catch (e) { }
     pkcs11.C_Logout(session);
     pkcs11.C_CloseSession(session);
     pkcs11.C_Finalize();
-    console.log('Cleanup complete.');
+    console.log('Test completed successfully and keys cleaned up.');
 }
 
 test().catch(console.error);
