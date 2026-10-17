@@ -277,9 +277,16 @@ const cloudHsm = {
             try {
                 // Public key handle is re-resolved by label in case the handle returned by keygen is not readable.
                 const pubHandle = findKeyHandle(pkcs11, session, p11, label, p11.CKO_PUBLIC_KEY);
+                console.error('[hsmClient:debug] reading CKA_MODULUS, pubHandle=', pubHandle, 'bytes=', bits / 8);
                 modulus = readAttribute(pkcs11, session, pubHandle, p11.CKA_MODULUS, bits / 8);
+                console.error('[hsmClient:debug] reading CKA_PUBLIC_EXPONENT');
                 exponent = readAttribute(pkcs11, session, pubHandle, p11.CKA_PUBLIC_EXPONENT, 8);
+                console.error('[hsmClient:debug] both attributes read ok');
             } catch (readErr) {
+                // Full stack + own property names, since native-addon errors often hide the real failure point.
+                console.error('[hsmClient:debug] ATTRIBUTE READ FAILED - name:', readErr.name, 'message:', readErr.message);
+                console.error('[hsmClient:debug] stack:', readErr.stack);
+                console.error('[hsmClient:debug] own properties:', Object.getOwnPropertyNames(readErr));
                 // Avoid leaving an orphan key pair under this label, which would block a retry.
                 try { pkcs11.C_DestroyObject(session, handles.privateKey); } catch (e) { /* best effort */ }
                 try { pkcs11.C_DestroyObject(session, handles.publicKey); } catch (e) { /* best effort */ }
