@@ -7,13 +7,27 @@ function readIfExists(p) {
 }
 
 function buildHttpsAgent() {
-    return new https.Agent({
+    // When EJBCA server or client certificates use legacy or smaller key lengths (e.g. < 2048-bit),
+    // OpenSSL 3.0+ rejects the handshake with "ee key too small" (SECLEVEL=2 default).
+    // Setting EJBCA_TLS_ALLOW_WEAK_KEYS=true (or EJBCA_TLS_INSECURE=true) allows SECLEVEL=0 ciphers to bypass this.
+    const allowWeakKeys = process.env.EJBCA_TLS_ALLOW_WEAK_KEYS === 'true' ||
+        process.env.EJBCA_TLS_ALLOW_WEAK_KEYS === '1' ||
+        process.env.EJBCA_TLS_INSECURE === 'true';
+
+    const agentOptions = {
         cert: readIfExists(process.env.EJBCA_CLIENT_CERT_PATH),
         key: readIfExists(process.env.EJBCA_CLIENT_KEY_PATH),
         ca: readIfExists(process.env.EJBCA_CA_CERT_PATH),
         // Only ever set EJBCA_TLS_INSECURE=true against a local trial server you fully control.
         rejectUnauthorized: process.env.EJBCA_TLS_INSECURE !== 'true',
-    });
+    };
+
+    if (allowWeakKeys) {
+        // DEFAULT@SECLEVEL=0 tells OpenSSL to accept legacy/shorter EE key lengths without throwing "ee key too small"
+        agentOptions.ciphers = 'DEFAULT@SECLEVEL=0';
+    }
+
+    return new https.Agent(agentOptions);
 }
 
 function client() {
